@@ -197,23 +197,25 @@ namespace MinecraftModUpdater
 
         private async Task InstallForgeAsync()
         {
-            string forgeUrl = "https://files.minecraftforge.net/maven/net/minecraftforge/forge/1.21-47.0.0/forge-1.21-47.0.0-installer.jar";
-
-            string forgeInstallerPath = await DownloadFileAsync(forgeUrl, "forge-installer.jar", "Forge 1.21 installer");
+            // Forge 1.12.2 - Latest recommended version (14.23.5.2859)
+            string forgeUrl = "https://maven.minecraftforge.net/net/minecraftforge/forge/1.12.2-14.23.5.2859/forge-1.12.2-14.23.5.2859-installer.jar";
+            string forgeInstallerPath = await DownloadFileAsync(forgeUrl, "forge-1.12.2-installer.jar", "Forge 1.12.2 installer");
 
             System.Windows.Forms.MessageBox.Show(
-                "The Forge installer will now open.\n\n" +
+                "The Forge 1.12.2 installer will now open.\n\n" +
                 "Please:\n" +
                 "1. Select 'Install client'\n" +
                 "2. Keep the default Minecraft directory\n" +
                 "3. Click 'OK' to install\n" +
                 "4. Wait for installation to complete\n\n" +
+                "Note: This will install Forge for Minecraft 1.12.2\n\n" +
                 "Click OK here to continue...",
-                "Forge Installer Instructions",
+                "Forge 1.12.2 Installer Instructions",
                 System.Windows.Forms.MessageBoxButtons.OK,
                 System.Windows.Forms.MessageBoxIcon.Information);
 
-            ReportStatus("Launching Forge installer GUI for client install...");
+            ReportStatus("Launching Forge 1.12.2 installer GUI for client install...");
+
             var forgeInstall = Process.Start(new ProcessStartInfo
             {
                 FileName = "java",
@@ -225,14 +227,15 @@ namespace MinecraftModUpdater
             if (forgeInstall == null)
                 throw new Exception("Failed to launch Forge installer.");
 
-            ReportStatus("Waiting for Forge installation to complete...");
+            ReportStatus("Waiting for Forge 1.12.2 installation to complete...");
             ReportStatus("Please complete the installation in the Forge installer window...");
 
             forgeInstall.WaitForExit();
 
             if (forgeInstall.ExitCode == 0)
             {
-                ReportStatus("Forge installation completed successfully.");
+                ReportStatus("Forge 1.12.2 installation completed successfully.");
+                ReportStatus("You can now launch Minecraft with the 'forge' profile.");
             }
             else
             {
@@ -240,14 +243,15 @@ namespace MinecraftModUpdater
                 ReportStatus("Installation may have failed or was cancelled by user.");
             }
 
+            // Clean up installer file
             try
             {
                 File.Delete(forgeInstallerPath);
                 ReportStatus("Cleaned up Forge installer file.");
             }
-            catch
+            catch (Exception ex)
             {
-
+                ReportStatus($"Warning: Could not delete installer file - {ex.Message}");
             }
         }
     }
