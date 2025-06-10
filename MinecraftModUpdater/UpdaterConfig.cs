@@ -1,6 +1,5 @@
 ﻿using System;
 using System.IO;
-using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading.Tasks;
 
@@ -12,11 +11,14 @@ namespace MinecraftModUpdater
         public string MinecraftModsPath { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft", "mods");
         public string TempDownloadPath { get; set; } = Path.Combine(Path.GetTempPath(), "minecraft_mod_update");
 
-        // Base URL for modpack parts
-        public string ModpackBaseUrl { get; set; } = "https://github.com/ShadowSyntax/MinecraftModUpdater/raw/master/";
+        // URL for the modpack rar file
+        public string ModpackRarUrl { get; set; } = "https://github.com/ShadowSyntax/MinecraftModUpdater/raw/master/Modpack.rar";
 
-        // Pattern for modpack part files
-        public string ModpackPartPattern { get; set; } = "Modpack.part{0}.rar";
+        // Base URL for multi-part modpack files
+        public string ModpackPartBaseUrl { get; set; } = "https://github.com/ShadowSyntax/MinecraftModUpdater/raw/master/modpack.part{0}.rar";
+
+        // Local path for the downloaded rar file
+        public string LocalModpackRarPath => Path.Combine(TempDownloadPath, "Modpack.rar");
 
         public void EnsureTempFolderExists()
         {
@@ -27,107 +29,110 @@ namespace MinecraftModUpdater
         }
 
         /// <summary>
-        /// Gets the local path for a specific modpack part
+        /// Gets the URL for a specific modpack part
         /// </summary>
-        public string GetLocalModpackPartPath(int partNumber)
-        {
-            string fileName = string.Format(ModpackPartPattern, partNumber);
-            return Path.Combine(TempDownloadPath, fileName);
-        }
-
-        /// <summary>
-        /// Gets the download URL for a specific modpack part
-        /// </summary>
+        /// <param name="partNumber">The part number (1, 2, 3, etc.)</param>
+        /// <returns>The URL for the specified part</returns>
         public string GetModpackPartUrl(int partNumber)
         {
-            string fileName = string.Format(ModpackPartPattern, partNumber);
-            return ModpackBaseUrl + fileName;
+            return string.Format(ModpackPartBaseUrl, partNumber);
         }
 
         /// <summary>
-        /// Discovers all available modpack parts by checking URLs
+        /// Gets the local file path for a specific modpack part
         /// </summary>
-        public async Task<List<int>> DiscoverModpackPartsAsync()
+        /// <param name="partNumber">The part number (1, 2, 3, etc.)</param>
+        /// <returns>The local file path for the specified part</returns>
+        public string GetLocalModpackPartPath(int partNumber)
         {
-            var availableParts = new List<int>();
+            return Path.Combine(TempDownloadPath, $"modpack.part{partNumber}.rar");
+        }
 
+        /// <summary>
+        /// Checks if the modpack rar file exists on GitHub
+        /// </summary>
+        public async Task<bool> CheckModpackExistsAsync()
+        {
             using (var httpClient = new HttpClient())
-            {
-                // Set a reasonable timeout
-                httpClient.Timeout = TimeSpan.FromSeconds(10);
-
-                // Check for parts starting from 1
-                for (int i = 1; i <= 20; i++) // Limit to 20 parts max to avoid infinite loop
-                {
-                    try
-                    {
-                        string url = GetModpackPartUrl(i);
-
-                        // Send HEAD request to check if file exists without downloading
-                        var response = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url));
-
-                        if (response.IsSuccessStatusCode)
-                        {
-                            availableParts.Add(i);
-                            Console.WriteLine($"Found modpack part {i}");
-                        }
-                        else
-                        {
-                            // If we get a 404, assume no more parts exist
-                            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                            {
-                                break;
-                            }
-                        }
-                    }
-                    catch (HttpRequestException)
-                    {
-                        // Network error or timeout, assume no more parts
-                        break;
-                    }
-                    catch (TaskCanceledException)
-                    {
-                        // Timeout, assume no more parts
-                        break;
-                    }
-                }
-            }
-
-            return availableParts;
-        }
-
-        /// <summary>
-        /// Gets all local modpack part file paths
-        /// </summary>
-        public List<string> GetAllLocalModpackParts(List<int> partNumbers)
-        {
-            var paths = new List<string>();
-            foreach (int partNumber in partNumbers)
-            {
-                paths.Add(GetLocalModpackPartPath(partNumber));
-            }
-            return paths;
-        }
-
-        /// <summary>
-        /// Cleans up all downloaded modpack parts
-        /// </summary>
-        public void CleanupModpackParts(List<int> partNumbers)
-        {
-            foreach (int partNumber in partNumbers)
             {
                 try
                 {
-                    string filePath = GetLocalModpackPartPath(partNumber);
-                    if (File.Exists(filePath))
+                    httpClient.Timeout = TimeSpan.FromSeconds(10);
+                    var response = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, ModpackRarUrl));
+                    return response.IsSuccessStatusCode;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Downloads the modpack rar file from GitHub
+        /// </summary>
+        public async Task DownloadModpackAsync(IProgress<int> progress = null)
+        {
+            EnsureTempFolderExists();
+
+            using (var httpClient = new HttpClient())
+            {
+                httpClient.Timeout = TimeSpan.FromMinutes(10);
+
+                using (var response = await httpClient.GetAsync(ModpackRarUrl, HttpCompletionOption.ResponseHeadersRead))
+                {
+                    response.EnsureSuccessStatusCode();
+
+                    var totalBytes = response.Content.Headers.ContentLength ?? -1L;
+                    var downloadedBytes = 0L;
+
+                    using (var contentStream = await response.Content.ReadAsStreamAsync())
+                    using (var fileStream = new FileStream(LocalModpackRarPath, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true))
                     {
-                        File.Delete(filePath);
+                        var buffer = new byte[8192];
+                        int bytesRead;
+
+                        while ((bytesRead = await contentStream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                        {
+                            await fileStream.WriteAsync(buffer, 0, bytesRead);
+                            downloadedBytes += bytesRead;
+
+                            if (totalBytes > 0 && progress != null)
+                            {
+                                var progressPercentage = (int)((downloadedBytes * 100L) / totalBytes);
+                                progress.Report(progressPercentage);
+                            }
+                        }
                     }
                 }
-                catch (Exception ex)
+            }
+        }
+
+        /// <summary>
+        /// Cleans up the downloaded modpack rar file
+        /// </summary>
+        public void CleanupModpack()
+        {
+            try
+            {
+                if (File.Exists(LocalModpackRarPath))
                 {
-                    Console.WriteLine($"Warning: Could not delete part {partNumber} - {ex.Message}");
+                    File.Delete(LocalModpackRarPath);
                 }
+
+                // Clean up temp directory if empty
+                if (Directory.Exists(TempDownloadPath))
+                {
+                    var remainingFiles = Directory.GetFiles(TempDownloadPath);
+                    if (remainingFiles.Length == 0)
+                    {
+                        Directory.Delete(TempDownloadPath);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Warning: Could not clean up files - {ex.Message}");
             }
         }
     }

@@ -13,27 +13,80 @@ namespace MinecraftModUpdater
     public class ModUpdater : IDisposable
     {
         private readonly HttpClient httpClient;
+        private readonly UpdaterConfig config;
 
         public event EventHandler<int> ProgressChanged;
         public event EventHandler<string> StatusChanged;
 
-        private string MinecraftModsPath => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            ".minecraft", "mods");
+        private string MinecraftModsPath => config.MinecraftModsPath;
 
         public ModUpdater()
         {
             httpClient = new HttpClient();
             httpClient.DefaultRequestHeaders.Add("User-Agent", "MinecraftModUpdater/1.0");
             httpClient.Timeout = TimeSpan.FromMinutes(10);
+            config = new UpdaterConfig();
         }
 
-        // This is the method your form is trying to call
         public async Task UpdateModsAsync()
         {
-            await InstallModsFromDesktopAsync();
+            await DownloadAndInstallModsAsync();
         }
 
+        public async Task DownloadAndInstallModsAsync()
+        {
+            try
+            {
+                OnStatusChanged("Checking for Modpack.rar on GitHub...");
+                OnProgressChanged(5);
+
+                // Check if modpack exists
+                bool modpackExists = await config.CheckModpackExistsAsync();
+                if (!modpackExists)
+                {
+                    throw new Exception("Modpack.rar not found on GitHub repository. Please ensure the file exists at the specified URL.");
+                }
+
+                OnStatusChanged("Found Modpack.rar on GitHub. Starting download...");
+                OnProgressChanged(10);
+
+                // Download the modpack
+                var downloadProgress = new Progress<int>(percentage =>
+                {
+                    // Map download progress to 10-60% of total progress
+                    var totalProgress = 10 + (percentage * 50 / 100);
+                    OnProgressChanged(totalProgress);
+                    OnStatusChanged($"Downloading Modpack.rar... {percentage}%");
+                });
+
+                await config.DownloadModpackAsync(downloadProgress);
+                OnStatusChanged("Download completed. Preparing for installation...");
+                OnProgressChanged(65);
+
+                // Ensure mods folder exists
+                EnsureModsFolderExists();
+                OnProgressChanged(70);
+
+                // Extract and install mods
+                await ExtractAndInstallModsFromRarAsync();
+                OnProgressChanged(100);
+
+                OnStatusChanged("Mod installation completed successfully!");
+                OnStatusChanged($"Mods installed to: {MinecraftModsPath}");
+            }
+            catch (Exception ex)
+            {
+                OnStatusChanged($"Installation failed: {ex.Message}");
+                throw;
+            }
+            finally
+            {
+                // Clean up downloaded files
+                config.CleanupModpack();
+            }
+        }
+
+        // Legacy method for backward compatibility (looking for Modpack.rar on desktop)
         public async Task InstallModsFromDesktopAsync()
         {
             try
@@ -41,7 +94,6 @@ namespace MinecraftModUpdater
                 OnStatusChanged("Looking for Modpack.rar on desktop...");
                 OnProgressChanged(10);
 
-                // Look specifically for Modpack.rar on desktop
                 string desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
                 string modpackPath = Path.Combine(desktopPath, "Modpack.rar");
 
@@ -53,16 +105,11 @@ namespace MinecraftModUpdater
                 OnStatusChanged("Found Modpack.rar on desktop.");
                 OnProgressChanged(20);
 
-                // Ensure mods folder exists
                 EnsureModsFolderExists();
                 OnProgressChanged(30);
 
-                // Extract and install mods
-                await ExtractAndInstallModsFromRarAsync(modpackPath);
-                OnProgressChanged(100);
-
-                OnStatusChanged("Mod installation completed successfully!");
-                OnStatusChanged($"Mods installed to: {MinecraftModsPath}");
+                // Note: This method now redirects to the new RAR download method
+                await DownloadAndInstallModsAsync();
             }
             catch (Exception ex)
             {
@@ -84,16 +131,20 @@ namespace MinecraftModUpdater
             }
         }
 
-        private async Task ExtractAndInstallModsFromRarAsync(string rarFilePath)
+        private async Task ExtractAndInstallModsFromRarAsync()
         {
             OnStatusChanged("Extracting mods from Modpack.rar...");
 
+            if (!File.Exists(config.LocalModpackRarPath))
+            {
+                throw new FileNotFoundException("Downloaded Modpack.rar file not found.");
+            }
+
             // Validate RAR file
-            bool isValidRar = ValidateRarFile(rarFilePath);
+            bool isValidRar = ValidateRarFile(config.LocalModpackRarPath);
             if (!isValidRar)
             {
                 OnStatusChanged("Signature validation failed, attempting to open file anyway...");
-                // Don't throw exception yet, try to open the file directly
             }
             else
             {
@@ -102,7 +153,7 @@ namespace MinecraftModUpdater
 
             try
             {
-                using (var archive = RarArchive.Open(rarFilePath))
+                using (var archive = RarArchive.Open(config.LocalModpackRarPath))
                 {
                     var installed = 0;
                     var skipped = 0;
@@ -141,8 +192,8 @@ namespace MinecraftModUpdater
                             }
                         }
 
-                        // Update progress (30% to 95%)
-                        var progress = 30 + (int)((i + 1) * 65.0 / jarEntries.Count);
+                        // Update progress (70% to 95%)
+                        var progress = 70 + (int)((i + 1) * 25.0 / jarEntries.Count);
                         OnProgressChanged(progress);
 
                         await Task.Delay(50); // Small delay to prevent UI freezing
