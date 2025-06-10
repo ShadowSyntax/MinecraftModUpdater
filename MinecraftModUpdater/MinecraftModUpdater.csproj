@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net6.0-windows</TargetFramework>
     <PublishSingleFile>true</PublishSingleFile>
@@ -9,28 +9,17 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>disable</Nullable>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <AssemblyTitle>Minecraft Mod Updater</AssemblyTitle>
-    <AssemblyDescription>Automatically updates Minecraft mods from GitHub releases</AssemblyDescription>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
-    <Company>Your Name</Company>
-    <Product>Minecraft Mod Updater</Product>
-    <Copyright>Copyright © 2025</Copyright>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    <ApplicationIcon>minecraftapp.ico</ApplicationIcon>
   </PropertyGroup>
-
-  <ItemGroup>
-    <None Remove="minecraft.ico" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="minecraft.ico">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
-
+  
   <ItemGroup>
     <PackageReference Include="SharpCompress" Version="0.40.0" />
     <PackageReference Include="System.Text.Json" Version="7.0.0" />
   </ItemGroup>
-
+  
+  <ItemGroup>
+    <EmbeddedResource Include="minecraftapp.ico" />
+    <Folder Include="Resources\" />
+  </ItemGroup>
 </Project>

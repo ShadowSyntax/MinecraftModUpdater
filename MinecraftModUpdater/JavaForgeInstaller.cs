@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
+using System.Linq;
 
 namespace MinecraftModUpdater
 {
@@ -62,7 +63,38 @@ namespace MinecraftModUpdater
                 });
 
                 process?.WaitForExit(3000);
-                return process?.ExitCode == 0;
+                if (process?.ExitCode == 0)
+                {
+                    ReportStatus("Java found in system PATH.");
+                    return true;
+                }
+
+                string[] commonJavaPaths = {
+                    @"C:\Program Files\Eclipse Adoptium",
+                    @"C:\Program Files\Java",
+                    @"C:\Program Files (x86)\Java"
+                };
+
+                foreach (string basePath in commonJavaPaths)
+                {
+                    if (Directory.Exists(basePath))
+                    {
+                        var javaDirs = Directory.GetDirectories(basePath, "*jre*", SearchOption.TopDirectoryOnly)
+                                              .Concat(Directory.GetDirectories(basePath, "*jdk*", SearchOption.TopDirectoryOnly));
+
+                        foreach (string javaDir in javaDirs)
+                        {
+                            string javaExe = Path.Combine(javaDir, "bin", "java.exe");
+                            if (File.Exists(javaExe))
+                            {
+                                ReportStatus($"Java found at: {javaExe}");
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                return false;
             }
             catch
             {
@@ -72,59 +104,112 @@ namespace MinecraftModUpdater
 
         private bool IsForgeInstalled(string forgeVersion)
         {
-            string versionsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft", "versions");
-            string forgePath = Path.Combine(versionsDir, $"forge-{forgeVersion}");
-            return Directory.Exists(forgePath);
+            try
+            {
+                string versionsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ".minecraft", "versions");
+                string forgePath = Path.Combine(versionsDir, $"forge-{forgeVersion}");
+                bool isInstalled = Directory.Exists(forgePath);
+
+                if (isInstalled)
+                {
+                    ReportStatus($"Forge {forgeVersion} found at: {forgePath}");
+                }
+
+                return isInstalled;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task<string> DownloadFileAsync(string url, string fileName, string description)
+        {
+            string filePath = Path.Combine(Path.GetTempPath(), fileName);
+
+            ReportStatus($"Downloading {description}...");
+
+            using (HttpClient client = new HttpClient())
+            {
+                client.Timeout = TimeSpan.FromMinutes(10); 
+
+                try
+                {
+                    using var response = await client.GetAsync(url);
+                    response.EnsureSuccessStatusCode();
+
+                    using var stream = await response.Content.ReadAsStreamAsync();
+                    using var file = File.Create(filePath);
+                    await stream.CopyToAsync(file);
+
+                    ReportStatus($"{description} download completed.");
+                }
+                catch (HttpRequestException ex)
+                {
+                    throw new Exception($"Failed to download {description}: {ex.Message}");
+                }
+                catch (TaskCanceledException ex)
+                {
+                    throw new Exception($"Download of {description} timed out: {ex.Message}");
+                }
+            }
+
+            return filePath;
         }
 
         private async Task InstallJavaAsync()
         {
             string javaUrl = "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.8+7/OpenJDK17U-jre_x64_windows_hotspot_17.0.8_7.msi";
-            string javaInstallerPath = Path.Combine(Path.GetTempPath(), "temurin-jre17.msi");
 
-            ReportStatus("Downloading Java...");
-            using (HttpClient client = new HttpClient())
-            using (var stream = await client.GetStreamAsync(javaUrl))
-            using (var file = File.Create(javaInstallerPath))
-            {
-                await stream.CopyToAsync(file);
-            }
-            ReportStatus("Java download completed.");
+            string javaInstallerPath = await DownloadFileAsync(javaUrl, "temurin-jre17.msi", "Java JRE 17");
 
             ReportStatus("Installing Java silently...");
             var javaInstall = Process.Start(new ProcessStartInfo
             {
                 FileName = "msiexec",
                 Arguments = $"/i \"{javaInstallerPath}\" /quiet /norestart",
-                UseShellExecute = false
+                UseShellExecute = false,
+                CreateNoWindow = true
             });
+
             if (javaInstall == null)
                 throw new Exception("Failed to start Java installer process.");
 
             javaInstall.WaitForExit();
 
             if (javaInstall.ExitCode != 0)
-                throw new Exception("Java installation failed.");
+            {
+                throw new Exception($"Java installation failed with exit code: {javaInstall.ExitCode}");
+            }
+
             ReportStatus("Java installed successfully.");
+
+            try
+            {
+                File.Delete(javaInstallerPath);
+                ReportStatus("Cleaned up Java installer file.");
+            }
+            catch
+            {
+
+            }
         }
 
         private async Task InstallForgeAsync()
         {
             string forgeUrl = "https://files.minecraftforge.net/maven/net/minecraftforge/forge/1.21-47.0.0/forge-1.21-47.0.0-installer.jar";
-            string forgeInstallerPath = Path.Combine(Path.GetTempPath(), "forge-installer.jar");
 
-            ReportStatus("Downloading Forge 1.21 installer...");
-            using (HttpClient client = new HttpClient())
-            using (var stream = await client.GetStreamAsync(forgeUrl))
-            using (var file = File.Create(forgeInstallerPath))
-            {
-                await stream.CopyToAsync(file);
-            }
-            ReportStatus("Forge download completed.");
+            string forgeInstallerPath = await DownloadFileAsync(forgeUrl, "forge-installer.jar", "Forge 1.21 installer");
 
             System.Windows.Forms.MessageBox.Show(
-                "Please pick Forge 1.21 Client install in the installer window that will appear next.",
-                "Forge Installer",
+                "The Forge installer will now open.\n\n" +
+                "Please:\n" +
+                "1. Select 'Install client'\n" +
+                "2. Keep the default Minecraft directory\n" +
+                "3. Click 'OK' to install\n" +
+                "4. Wait for installation to complete\n\n" +
+                "Click OK here to continue...",
+                "Forge Installer Instructions",
                 System.Windows.Forms.MessageBoxButtons.OK,
                 System.Windows.Forms.MessageBoxIcon.Information);
 
@@ -139,7 +224,31 @@ namespace MinecraftModUpdater
 
             if (forgeInstall == null)
                 throw new Exception("Failed to launch Forge installer.");
-        }
 
+            ReportStatus("Waiting for Forge installation to complete...");
+            ReportStatus("Please complete the installation in the Forge installer window...");
+
+            forgeInstall.WaitForExit();
+
+            if (forgeInstall.ExitCode == 0)
+            {
+                ReportStatus("Forge installation completed successfully.");
+            }
+            else
+            {
+                ReportStatus($"Forge installer exited with code: {forgeInstall.ExitCode}");
+                ReportStatus("Installation may have failed or was cancelled by user.");
+            }
+
+            try
+            {
+                File.Delete(forgeInstallerPath);
+                ReportStatus("Cleaned up Forge installer file.");
+            }
+            catch
+            {
+
+            }
+        }
     }
 }

@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Net.Http;
+using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using SharpCompress.Archives;
@@ -21,7 +22,8 @@ namespace MinecraftModUpdater
         {
             InitializeComponent();
 
-            this.Icon = new Icon("minecraft.ico");  
+            // Load embedded icon
+            LoadEmbeddedIcon();
 
             modUpdater = new ModUpdater();
             modUpdater.ProgressChanged += OnProgressChanged;
@@ -29,6 +31,36 @@ namespace MinecraftModUpdater
 
             installJavaForgeButton.Click += async (s, e) => await OnInstallJavaForgeButtonClicked();
             adminInstallButton.Click += new EventHandler(OnAdminInstallButtonClicked);
+        }
+
+        private void LoadEmbeddedIcon()
+        {
+            try
+            {
+                var assembly = Assembly.GetExecutingAssembly();
+
+                // Debug: List all embedded resources
+                var resourceNames = assembly.GetManifestResourceNames();
+                foreach (var name in resourceNames)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Found resource: {name}");
+                }
+
+                using var stream = assembly.GetManifestResourceStream("MinecraftModUpdater.minecraftapp.ico");
+                if (stream != null)
+                {
+                    System.Diagnostics.Debug.WriteLine("Icon stream loaded successfully");
+                    this.Icon = new Icon(stream);
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("Icon stream is null - resource not found");
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to load embedded icon: {ex.Message}");
+            }
         }
 
         private async void UpdateButton_Click(object sender, EventArgs e)
@@ -111,7 +143,7 @@ namespace MinecraftModUpdater
 
         private async Task OnInstallJavaForgeButtonClicked()
         {
-            ClearConsole(); 
+            ClearConsole();
             try
             {
                 installJavaForgeButton.Enabled = false;
@@ -160,7 +192,7 @@ namespace MinecraftModUpdater
 
                 string downloadUrl = config.ModpackRarUrl;
                 string tempDownloadPath = config.LocalModpackRarPath;
-                string destinationFolder = @"C:\test"; //update to my file path
+                string modsFolder = @"C:\Users\Default.DESKTOP-R9B8UHT\Desktop\Miecraft server\mods";
 
                 config.EnsureTempFolderExists();
 
@@ -177,8 +209,8 @@ namespace MinecraftModUpdater
 
                 LogToConsole("Modpack downloaded. Extracting...");
 
-                if (!Directory.Exists(destinationFolder))
-                    Directory.CreateDirectory(destinationFolder);
+                if (!Directory.Exists(modsFolder))
+                    Directory.CreateDirectory(modsFolder);
 
                 using (var archive = RarArchive.Open(tempDownloadPath))
                 {
@@ -186,16 +218,28 @@ namespace MinecraftModUpdater
                     {
                         if (!entry.IsDirectory)
                         {
-                            entry.WriteToDirectory(destinationFolder, new ExtractionOptions()
+                            string fileName = Path.GetFileName(entry.Key);
+                            string destinationFilePath = Path.Combine(modsFolder, fileName);
+
+                            // Skip if the file already exists
+                            if (File.Exists(destinationFilePath))
                             {
-                                ExtractFullPath = true,
-                                Overwrite = true
-                            });
+                                LogToConsole($"Skipped existing mod: {fileName}");
+                                continue;
+                            }
+
+                            using (var entryStream = entry.OpenEntryStream())
+                            using (var destinationStream = new FileStream(destinationFilePath, FileMode.CreateNew))
+                            {
+                                await entryStream.CopyToAsync(destinationStream);
+                            }
+
+                            LogToConsole($"Installed mod: {fileName}");
                         }
                     }
                 }
 
-                LogToConsole($"Mods extracted to: {destinationFolder}");
+                LogToConsole($"Mods installed to: {modsFolder}");
                 statusLabel.Text = "Admin mod installation complete.";
             }
             catch (Exception ex)
