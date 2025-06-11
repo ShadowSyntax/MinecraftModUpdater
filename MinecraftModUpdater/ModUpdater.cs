@@ -37,6 +37,9 @@ namespace MinecraftModUpdater
         {
             try
             {
+                // Clear existing mods first
+                await ClearExistingModsAsync();
+
                 OnStatusChanged("Checking for Modpack.rar on GitHub...");
                 OnProgressChanged(5);
 
@@ -83,6 +86,45 @@ namespace MinecraftModUpdater
             {
                 // Clean up downloaded files
                 config.CleanupModpack();
+            }
+        }
+
+        private async Task ClearExistingModsAsync()
+        {
+            OnStatusChanged("Clearing existing mods...");
+            OnProgressChanged(2);
+
+            try
+            {
+                if (!Directory.Exists(MinecraftModsPath))
+                {
+                    OnStatusChanged("Mods folder doesn't exist yet, will be created.");
+                    return;
+                }
+
+                var existingMods = Directory.GetFiles(MinecraftModsPath, "*.jar");
+                int deletedCount = 0;
+
+                foreach (string modFile in existingMods)
+                {
+                    try
+                    {
+                        File.Delete(modFile);
+                        deletedCount++;
+                        OnStatusChanged($"Deleted: {Path.GetFileName(modFile)}");
+                    }
+                    catch (Exception ex)
+                    {
+                        OnStatusChanged($"Warning: Could not delete {Path.GetFileName(modFile)} - {ex.Message}");
+                    }
+                }
+
+                OnStatusChanged($"Cleared {deletedCount} existing mod(s).");
+            }
+            catch (Exception ex)
+            {
+                OnStatusChanged($"Warning: Error clearing mods folder - {ex.Message}");
+                // Don't throw here, just warn - we can still try to install new mods
             }
         }
 
@@ -156,7 +198,6 @@ namespace MinecraftModUpdater
                 using (var archive = RarArchive.Open(config.LocalModpackRarPath))
                 {
                     var installed = 0;
-                    var skipped = 0;
                     var jarEntries = archive.Entries.Where(e => !e.IsDirectory &&
                         e.Key.EndsWith(".jar", StringComparison.OrdinalIgnoreCase)).ToList();
 
@@ -173,23 +214,16 @@ namespace MinecraftModUpdater
                         string modName = Path.GetFileName(entry.Key);
                         string destinationPath = Path.Combine(MinecraftModsPath, modName);
 
-                        if (File.Exists(destinationPath))
+                        try
                         {
-                            OnStatusChanged($"Skipped (already exists): {modName}");
-                            skipped++;
+                            // Always overwrite since we cleared the folder first
+                            entry.WriteToFile(destinationPath, new ExtractionOptions { Overwrite = true });
+                            OnStatusChanged($"Installed: {modName}");
+                            installed++;
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            try
-                            {
-                                entry.WriteToFile(destinationPath, new ExtractionOptions { Overwrite = false });
-                                OnStatusChanged($"Installed: {modName}");
-                                installed++;
-                            }
-                            catch (Exception ex)
-                            {
-                                OnStatusChanged($"Failed to install {modName}: {ex.Message}");
-                            }
+                            OnStatusChanged($"Failed to install {modName}: {ex.Message}");
                         }
 
                         // Update progress (70% to 95%)
@@ -199,7 +233,7 @@ namespace MinecraftModUpdater
                         await Task.Delay(50); // Small delay to prevent UI freezing
                     }
 
-                    OnStatusChanged($"Installation complete! Installed: {installed}, Skipped: {skipped}");
+                    OnStatusChanged($"Installation complete! Installed: {installed} new mod(s)");
                 }
             }
             catch (Exception ex)

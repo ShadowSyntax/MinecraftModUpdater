@@ -196,22 +196,25 @@ namespace MinecraftModUpdater
 
                 config.EnsureTempFolderExists();
 
-                // Discover and download all modpack parts
-                var availableParts = await DiscoverAndDownloadModPackPartsAsync();
+                // Clear existing mods first
+                await ClearExistingMods(modsFolder);
 
-                LogToConsole("All modpack parts downloaded. Extracting...");
+                // Try single file first, then fall back to multi-part
+                bool usedSingleFile = await TryInstallFromSingleFile(modsFolder);
 
-                if (!Directory.Exists(modsFolder))
-                    Directory.CreateDirectory(modsFolder);
-
-                await ExtractModsFromPartsAsync(availableParts, modsFolder);
+                if (!usedSingleFile)
+                {
+                    // Discover and download all modpack parts
+                    var availableParts = await DiscoverAndDownloadModPackPartsAsync();
+                    LogToConsole("All modpack parts downloaded. Extracting...");
+                    await ExtractModsFromPartsAsync(availableParts, modsFolder);
+                    // Cleanup downloaded parts
+                    CleanupDownloadedParts(availableParts);
+                }
 
                 LogToConsole($"Admin mod installation completed successfully!");
                 LogToConsole($"Mods installed to: {modsFolder}");
                 statusLabel.Text = "Admin mod installation complete.";
-
-                // Cleanup downloaded parts
-                CleanupDownloadedParts(availableParts);
             }
             catch (Exception ex)
             {
@@ -221,6 +224,139 @@ namespace MinecraftModUpdater
             finally
             {
                 adminInstallButton.Enabled = true;
+            }
+        }
+
+        private async Task ClearExistingMods(string modsFolder)
+        {
+            if (!Directory.Exists(modsFolder))
+            {
+                Directory.CreateDirectory(modsFolder);
+                LogToConsole($"Created mods folder: {modsFolder}");
+                return;
+            }
+
+            LogToConsole("Clearing existing mods...");
+
+            try
+            {
+                var existingMods = Directory.GetFiles(modsFolder, "*.jar");
+                int deletedCount = 0;
+
+                foreach (string modFile in existingMods)
+                {
+                    try
+                    {
+                        File.Delete(modFile);
+                        deletedCount++;
+                        LogToConsole($"Deleted: {Path.GetFileName(modFile)}");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogToConsole($"Warning: Could not delete {Path.GetFileName(modFile)} - {ex.Message}");
+                    }
+                }
+
+                LogToConsole($"Cleared {deletedCount} existing mod(s).");
+            }
+            catch (Exception ex)
+            {
+                LogToConsole($"Warning: Error clearing mods folder - {ex.Message}");
+            }
+        }
+
+        private async Task<bool> TryInstallFromSingleFile(string modsFolder)
+        {
+            try
+            {
+                LogToConsole("Checking for single Modpack.rar file...");
+
+                bool modpackExists = await config.CheckModpackExistsAsync();
+                if (!modpackExists)
+                {
+                    LogToConsole("Single Modpack.rar not found, will try multi-part archive...");
+                    return false;
+                }
+
+                LogToConsole("Found single Modpack.rar file. Downloading...");
+
+                var downloadProgress = new Progress<int>(percentage =>
+                {
+                    statusLabel.Text = $"Downloading Modpack.rar... {percentage}%";
+                    LogToConsole($"Download progress: {percentage}%");
+                });
+
+                await config.DownloadModpackAsync(downloadProgress);
+                LogToConsole("Download completed. Extracting...");
+
+                await ExtractModsFromSingleFile(modsFolder);
+
+                // Cleanup
+                config.CleanupModpack();
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogToConsole($"Failed to install from single file: {ex.Message}");
+                config.CleanupModpack();
+                return false;
+            }
+        }
+
+        private async Task ExtractModsFromSingleFile(string modsFolder)
+        {
+            if (!File.Exists(config.LocalModpackRarPath))
+            {
+                throw new FileNotFoundException("Downloaded Modpack.rar file not found.");
+            }
+
+            // Validate RAR file
+            if (!ValidateRarFile(config.LocalModpackRarPath))
+            {
+                throw new Exception("Invalid RAR file signature. The downloaded file may be corrupted.");
+            }
+
+            LogToConsole("Extracting mods from single RAR file...");
+
+            using (var archive = RarArchive.Open(config.LocalModpackRarPath))
+            {
+                var installed = 0;
+                var totalJarFiles = archive.Entries.Count(e => !e.IsDirectory && e.Key.EndsWith(".jar", StringComparison.OrdinalIgnoreCase));
+
+                LogToConsole($"Found {totalJarFiles} mod files in archive.");
+
+                foreach (var entry in archive.Entries)
+                {
+                    if (!entry.IsDirectory && entry.Key.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string fileName = Path.GetFileName(entry.Key);
+                        string destinationFilePath = Path.Combine(modsFolder, fileName);
+
+                        try
+                        {
+                            using (var entryStream = entry.OpenEntryStream())
+                            using (var destinationStream = new FileStream(destinationFilePath, FileMode.Create))
+                            {
+                                await entryStream.CopyToAsync(destinationStream);
+                            }
+
+                            LogToConsole($"Installed mod: {fileName}");
+                            installed++;
+                        }
+                        catch (Exception ex)
+                        {
+                            LogToConsole($"Failed to install {fileName}: {ex.Message}");
+                        }
+                    }
+                }
+
+                if (installed == 0)
+                {
+                    throw new Exception("No mod files found in the archive.");
+                }
+
+                LogToConsole($"Installed {installed} mod(s) from single archive.");
             }
         }
 
@@ -339,30 +475,21 @@ namespace MinecraftModUpdater
             using (var archive = RarArchive.Open(firstPartPath))
             {
                 var installed = 0;
-                var skipped = 0;
                 var totalJarFiles = archive.Entries.Count(e => !e.IsDirectory && e.Key.EndsWith(".jar", StringComparison.OrdinalIgnoreCase));
 
                 LogToConsole($"Found {totalJarFiles} mod files in archive.");
 
                 foreach (var entry in archive.Entries)
                 {
-                    if (!entry.IsDirectory)
+                    if (!entry.IsDirectory && entry.Key.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
                     {
                         string fileName = Path.GetFileName(entry.Key);
                         string destinationFilePath = Path.Combine(modsFolder, fileName);
 
-                        // Skip if the file already exists
-                        if (File.Exists(destinationFilePath))
-                        {
-                            LogToConsole($"Skipped existing mod: {fileName}");
-                            skipped++;
-                            continue;
-                        }
-
                         try
                         {
                             using (var entryStream = entry.OpenEntryStream())
-                            using (var destinationStream = new FileStream(destinationFilePath, FileMode.CreateNew))
+                            using (var destinationStream = new FileStream(destinationFilePath, FileMode.Create))
                             {
                                 await entryStream.CopyToAsync(destinationStream);
                             }
@@ -377,18 +504,12 @@ namespace MinecraftModUpdater
                     }
                 }
 
-                if (installed == 0 && skipped > 0)
-                {
-                    LogToConsole("All mods are already installed. No new mods added.");
-                }
-                else if (installed == 0)
+                if (installed == 0)
                 {
                     throw new Exception("No mod files found in the archive.");
                 }
-                else
-                {
-                    LogToConsole($"Installed {installed} new mod(s). Skipped {skipped} already present.");
-                }
+
+                LogToConsole($"Installed {installed} mod(s) from multi-part archive.");
             }
         }
 
@@ -435,7 +556,6 @@ namespace MinecraftModUpdater
                 }
             }
 
-            // Also try to clean up the temp directory if it's empty
             try
             {
                 if (Directory.Exists(config.TempDownloadPath))
